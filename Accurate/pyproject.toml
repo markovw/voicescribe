@@ -1,0 +1,8 @@
+[project]
+name = "voicescribe-accurate"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["mlx-audio[stt]==0.5.7", "soundfile>=0.13.1", "jinja2>=3.1.6,<4"]
+
+[tool.uv]
+package = false

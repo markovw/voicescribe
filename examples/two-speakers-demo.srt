@@ -1,0 +1,39 @@
+1
+00:00:00,000 --> 00:00:04,160
+[Samantha] Hello Daniel, today we are testing VoiceScribe.
+
+2
+00:00:04,160 --> 00:00:07,120
+[Samantha] Can you describe what it should do with the video recording?
+
+3
+00:00:07,120 --> 00:00:08,080
+[Daniel] Of course.
+
+4
+00:00:08,080 --> 00:00:13,920
+[Daniel] It should extract the audio, recognize the words, and show which person said each sentence.
+
+5
+00:00:13,920 --> 00:00:15,920
+[Daniel] Everything should work on this Mac.
+
+6
+00:00:15,920 --> 00:00:16,560
+[Samantha] Great.
+
+7
+00:00:16,560 --> 00:00:19,920
+[Samantha] We also need to rename speakers and export subtitles.
+
+8
+00:00:19,920 --> 00:00:23,200
+[Samantha] I will check the transcript before sharing it with our team.
+
+9
+00:00:23,200 --> 00:00:24,640
+[Daniel] That sounds useful.
+
+10
+00:00:24,640 --> 00:00:30,080
+[Daniel] Even when there is only one audio channel, the two voices should receive different speaker labels.
