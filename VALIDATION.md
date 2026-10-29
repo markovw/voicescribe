@@ -1,5 +1,13 @@
 # Validation
 
+## Release 2.0.0, build 2
+
+Adds the optional Deepgram cloud mode and the refactored sidebar (see the Deepgram
+section below). `zsh test.sh` passed and `dist/VoiceScribe.app` was built, signed
+ad hoc and packaged into `VoiceScribe.dmg`. The sidebar layout and the Deepgram
+mode picker were checked by hand in the installed build; no live Deepgram
+transcription was run by the release author.
+
 ## Initial public release — 1.0.0, build 1
 
 The release preserves the existing history schema, preference keys, transcript
