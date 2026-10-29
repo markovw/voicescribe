@@ -23,6 +23,8 @@ private final class ExpansionInteraction: ObservableObject {
 private final class ModelMenuInteraction: ObservableObject {
     @Published var models = false
     @Published var voices = false
+    @Published var cloud = false
+    @Published var cloudKeyDraft = ""
 }
 
 private struct ExpandableSection<Content: View>: View {
@@ -214,146 +216,215 @@ struct ContentView: View {
         }.padding(18).frame(width: 350).background(ink).foregroundStyle(textColor)
     }
 
+    var cloudSettings: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Deepgram").font(uiFont(14, weight: .medium))
+            HStack(spacing: 6) {
+                Image(systemName: s.hasCloudKey ? "checkmark.seal" : "key").font(.system(size: 11))
+                Text(s.hasCloudKey ? "API key saved in Keychain" : "No API key")
+                    .font(uiFont(11))
+            }.foregroundStyle(s.hasCloudKey ? accent : muted)
+            SecureField(s.hasCloudKey ? "Replace API key" : "Paste API key", text: $modelMenu.cloudKeyDraft)
+                .font(uiFont(12)).textFieldStyle(.roundedBorder)
+                .onSubmit { if s.saveCloudKey(modelMenu.cloudKeyDraft) { modelMenu.cloudKeyDraft = "" } }
+            HStack {
+                Button("Save key") {
+                    if s.saveCloudKey(modelMenu.cloudKeyDraft) { modelMenu.cloudKeyDraft = "" }
+                }.disabled(modelMenu.cloudKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Spacer()
+                if s.hasCloudKey {
+                    Button("Remove key", role: .destructive) { s.removeCloudKey() }
+                }
+            }.font(uiFont(12))
+            Picker("Language", selection: $s.cloudLanguage) {
+                ForEach(CloudLanguage.allCases) { Text($0.title).tag($0) }
+            }.font(uiFont(12))
+            Text("Nova-3 with speaker labels. Only extracted audio is uploaded. Usage is billed to your Deepgram account; vocabulary terms are sent as keyterms at extra cost.")
+                .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+        }.padding(20).frame(width: 330).background(ink).foregroundStyle(textColor)
+    }
+
+    var modeSelector: some View {
+        HStack(spacing: 3) {
+            ForEach(TranscriptionMode.allCases) { mode in
+                Button { s.mode = mode } label: {
+                    Text(mode.title).font(uiFont(12, weight: .medium))
+                        .fixedSize()
+                        .frame(maxWidth: .infinity).padding(.vertical, 8).padding(.horizontal, 3)
+                        .foregroundStyle(s.mode == mode ? ink : textColor)
+                        .background(s.mode == mode ? accent : .clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityAddTraits(s.mode == mode ? .isSelected : [])
+            }
+        }.padding(2).background(soft).clipShape(RoundedRectangle(cornerRadius: 8))
+            .disabled(s.busy).accessibilityElement(children: .contain)
+            .accessibilityLabel("Transcription mode")
+    }
+
+    /// One row opens the settings popover for the active mode.
+    func settingsRow(_ title: String, symbol: String, tint: Color? = nil, isPresented: Binding<Bool>,
+                     label: String) -> some View {
+        Button { isPresented.wrappedValue.toggle() } label: {
+            HStack {
+                Text(title).font(uiFont(12, weight: .medium)).lineLimit(1)
+                Spacer(minLength: 8)
+                Image(systemName: symbol).font(.system(size: 10, weight: .medium)).foregroundStyle(tint ?? textColor)
+            }.padding(10).frame(maxWidth: .infinity)
+                .background(soft).clipShape(RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(s.busy).accessibilityLabel(label)
+    }
+
+    var modelRow: some View {
+        Group {
+            if s.mode == .cloud {
+                settingsRow("Nova-3 · \(s.cloudLanguage.title)",
+                            symbol: s.hasCloudKey ? "chevron.down" : "exclamationmark.circle",
+                            tint: s.hasCloudKey ? nil : accent, isPresented: $modelMenu.cloud,
+                            label: s.hasCloudKey ? "Deepgram settings" : "Deepgram settings, API key missing")
+                    .popover(isPresented: $modelMenu.cloud, arrowEdge: .trailing) { cloudSettings }
+            } else {
+                settingsRow(s.recognitionModel.shortTitle, symbol: "chevron.down", isPresented: $modelMenu.models,
+                            label: "Speech model, \(s.recognitionModel.shortTitle)")
+                    .popover(isPresented: $modelMenu.models, arrowEdge: .trailing) { modelChoices }
+            }
+        }
+    }
+
+    var voicesRow: some View {
+        Button { modelMenu.voices.toggle() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "slider.horizontal.3").font(.system(size: 11))
+                Text(s.mode == .cloud ? "Speakers and vocabulary" : "Voices and vocabulary")
+                    .font(uiFont(12, weight: .medium))
+                Spacer(minLength: 0)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4).contentShape(Rectangle())
+        }.buttonStyle(.plain).foregroundStyle(muted).disabled(s.busy)
+            .popover(isPresented: $modelMenu.voices, arrowEdge: .trailing) { voicesSettings }
+    }
+
+    var voicesSettings: some View {
+        let local = s.mode.isLocal
+        return VStack(alignment: .leading, spacing: 14) {
+            Text(local ? "Voices and vocabulary" : "Speakers and vocabulary").font(uiFont(14, weight: .medium))
+            Toggle("One speaker per audio track", isOn: $s.oneSpeakerPerSource)
+                .font(uiFont(12)).disabled(s.busy)
+            if s.oneSpeakerPerSource {
+                Text("Each original audio track keeps one speaker. Use only when each track contains one person's voice.")
+                    .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+            }
+            if local {
+                Picker("Voice detection", selection: $s.voiceModel) {
+                    ForEach(VoiceModel.allCases) { model in Text(model.title).tag(model) }
+                }.font(uiFont(12)).disabled(s.busy || s.oneSpeakerPerSource)
+                Text(s.voiceModel.detail).font(uiFont(11)).foregroundStyle(muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Text("Total speakers").font(uiFont(12)).foregroundStyle(muted)
+                    Spacer()
+                    Picker("Number of speakers", selection: $s.count) {
+                        Text("Auto").tag(0)
+                        ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
+                    }.labelsHidden().frame(width: 76).disabled(s.busy || s.oneSpeakerPerSource)
+                        .help("Used for mixed audio with Community. Separate audio keeps sources independent. For one person on each track, enable One speaker per audio track.")
+                }
+                if s.count > 0 && !s.oneSpeakerPerSource {
+                    Text("Known count applies to mixed audio; separate sources detect voices independently")
+                        .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            TextField("Names or terms, comma-separated", text: $s.vocabulary)
+                .font(uiFont(12)).textFieldStyle(.roundedBorder).disabled(s.busy)
+                .help(local ? "Vocabulary hints for Qwen and MOSS. Parakeet does not use vocabulary hints. Audio is processed locally."
+                            : "Sent to Deepgram as keyterms at extra cost.")
+            Text(local ? "All inference runs on this Mac. First use downloads model weights."
+                       : "Deepgram detects speakers itself, so voice model and speaker count are not used.")
+                .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+        }.padding(20).frame(width: 330).background(ink).foregroundStyle(textColor)
+    }
+
+    var quickExportSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Quick export", isOn: $s.quickExport).toggleStyle(.checkbox).font(uiFont(13))
+                .disabled(s.busy)
+                .help("Automatically transcribe new files in the selected mode and save next to the source. No review or save dialog required.")
+            if s.quickExport {
+                Picker("Format", selection: $s.quickFormat) {
+                    Text("Markdown (.md)").tag("md")
+                    Text("Plain text (.txt)").tag("txt")
+                    Text("Subtitles (.srt)").tag("srt")
+                    Text("WebVTT (.vtt)").tag("vtt")
+                    Text("Project (.json)").tag("json")
+                }.font(uiFont(12)).disabled(s.busy)
+            }
+        }
+    }
+
+    var libraryHeader: some View {
+        HStack {
+            Text("Library").font(uiFont(12)).foregroundStyle(muted)
+            Spacer()
+            Button {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+                libraryInteraction.clearLibraryFailed = false
+                libraryInteraction.showingClearLibrary = true
+            } label: {
+                Text("Clear").font(uiFont(12)).padding(.horizontal, 9).padding(.vertical, 5)
+                    .foregroundStyle(s.history.isEmpty || s.busy ? rule : muted)
+                    .background(soft).overlay(Rectangle().stroke(rule, lineWidth: 1))
+            }.buttonStyle(.plain).disabled(s.history.isEmpty || s.busy)
+                .help("Clear all saved transcripts from the library")
+                .accessibilityLabel("Clear library")
+        }
+    }
+
+    func libraryRow(_ doc: Transcript) -> some View {
+        let selected = s.document?.id == doc.id
+        return Button { s.open(doc) } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(doc.title).font(uiFont(13)).lineLimit(2)
+                    .multilineTextAlignment(.leading).foregroundStyle(textColor)
+                Text("\(stamp(doc.duration)) · \(doc.speakerCount) speakers")
+                    .font(uiFont(12)).foregroundStyle(selected ? accent : muted)
+                Text(doc.created.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "en_US"))))
+                    .font(uiFont(12)).foregroundStyle(muted)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 22).padding(.vertical, 12)
+                .background(selected ? soft : .clear)
+                .contentShape(Rectangle())
+                .overlay(alignment: .leading) {
+                    if selected { Rectangle().fill(accent).frame(width: 2).allowsHitTesting(false) }
+                }
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(rule).frame(height: 1).padding(.horizontal, 22).allowsHitTesting(false)
+                }
+        }.buttonStyle(.plain).disabled(s.busy).help(doc.title)
+    }
+
     var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("voicescribe").font(uiFont(20, weight: .medium))
-                .padding(.top, 30).padding(.bottom, 24).padding(.horizontal, 22)
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Transcription").font(uiFont(12)).foregroundStyle(muted)
-                HStack(spacing: 0) {
-                    ForEach(TranscriptionMode.allCases) { mode in
-                        Button { s.mode = mode } label: {
-                            Text(mode.title).font(uiFont(13, weight: .medium))
-                                .frame(maxWidth: .infinity).padding(.vertical, 8)
-                                .foregroundStyle(s.mode == mode ? ink : textColor)
-                                .background(s.mode == mode ? accent : .clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                .contentShape(Rectangle())
-                        }.buttonStyle(.plain)
-                            .accessibilityAddTraits(s.mode == mode ? .isSelected : [])
-                    }
-                }.background(soft).clipShape(RoundedRectangle(cornerRadius: 6))
-                    .disabled(s.busy).accessibilityElement(children: .contain)
-                    .accessibilityLabel("Transcription mode")
-                Button { modelMenu.models.toggle() } label: {
-                    HStack {
-                        Text(s.recognitionModel.shortTitle).font(uiFont(12, weight: .medium))
-                        Spacer()
-                        Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
-                    }.padding(10).frame(maxWidth: .infinity)
-                        .background(soft).clipShape(RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain).disabled(s.busy)
-                    .accessibilityLabel("Speech model, \(s.recognitionModel.shortTitle)")
-                    .popover(isPresented: $modelMenu.models, arrowEdge: .trailing) {
-                        modelChoices
-                    }
-                Button { modelMenu.voices.toggle() } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "slider.horizontal.3").font(.system(size: 11))
-                        Text("Voices and vocabulary").font(uiFont(12, weight: .medium))
-                        Spacer(minLength: 0)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 6).contentShape(Rectangle())
-                }.buttonStyle(.plain).foregroundStyle(muted).disabled(s.busy)
-                    .popover(isPresented: $modelMenu.voices, arrowEdge: .trailing) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Voices and vocabulary").font(uiFont(14, weight: .medium))
-                            Toggle("One speaker per audio track", isOn: $s.oneSpeakerPerSource)
-                                .font(uiFont(12)).disabled(s.busy)
-                            if s.oneSpeakerPerSource {
-                                Text("Each original audio track keeps one speaker. Use only when each track contains one person's voice.")
-                                    .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
-                            }
-                            Picker("Voice detection", selection: $s.voiceModel) {
-                                ForEach(VoiceModel.allCases) { model in Text(model.title).tag(model) }
-                            }.font(uiFont(12)).disabled(s.busy || s.oneSpeakerPerSource)
-                            Text(s.voiceModel.detail).font(uiFont(11)).foregroundStyle(muted)
-                                .fixedSize(horizontal: false, vertical: true)
-                            HStack {
-                                Text("Total speakers").font(uiFont(12)).foregroundStyle(muted)
-                                Spacer()
-                                Picker("Number of speakers", selection: $s.count) {
-                                    Text("Auto").tag(0)
-                                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
-                                }.labelsHidden().frame(width: 76).disabled(s.busy || s.oneSpeakerPerSource)
-                                    .help("Used for mixed audio with Community. Separate audio keeps sources independent. For one person on each track, enable One speaker per audio track.")
-                            }
-                            if s.count > 0 && !s.oneSpeakerPerSource {
-                                Text("Known count applies to mixed audio; separate sources detect voices independently")
-                                    .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
-                            }
-                            TextField("Names or terms, comma-separated", text: $s.vocabulary)
-                                .font(uiFont(12)).textFieldStyle(.roundedBorder).disabled(s.busy)
-                                .help("Vocabulary hints for Qwen and MOSS. Parakeet does not use vocabulary hints. Audio is processed locally.")
-                            Text("All inference runs on this Mac. First use downloads model weights.")
-                                .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
-                        }.padding(20).frame(width: 330)
-                            .background(ink).foregroundStyle(textColor)
-                    }
-            }.padding(.horizontal, 22).padding(.bottom, 22)
+                .padding(.top, 30).padding(.bottom, 22).padding(.horizontal, 22)
+            VStack(alignment: .leading, spacing: 10) {
+                modeSelector
+                modelRow
+                voicesRow
+            }.padding(.horizontal, 22).padding(.bottom, 18)
             Button { s.choose() } label: {
                 Label("Open file", systemImage: "plus").frame(maxWidth: .infinity)
             }.buttonStyle(QuietButtonStyle()).disabled(s.busy).padding(.horizontal, 22)
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle("Quick export", isOn: $s.quickExport).toggleStyle(.checkbox).font(uiFont(13))
-                    .disabled(s.busy)
-                    .help("Automatically transcribe new files in the selected mode and save next to the source. No review or save dialog required.")
-                if s.quickExport {
-                    Picker("Format", selection: $s.quickFormat) {
-                        Text("Markdown (.md)").tag("md")
-                        Text("Plain text (.txt)").tag("txt")
-                        Text("Subtitles (.srt)").tag("srt")
-                        Text("WebVTT (.vtt)").tag("vtt")
-                        Text("Project (.json)").tag("json")
-                    }.font(uiFont(12)).disabled(s.busy)
-                    Text("Saves next to the source file").font(uiFont(12)).foregroundStyle(muted)
-                }
-            }.padding(.horizontal, 22).padding(.top, 18)
-            HStack {
-                Text("Library").font(uiFont(12)).foregroundStyle(muted)
-                Spacer()
-                Button {
-                    NSApp.keyWindow?.makeFirstResponder(nil)
-                    libraryInteraction.clearLibraryFailed = false
-                    libraryInteraction.showingClearLibrary = true
-                } label: {
-                    Text("Clear").font(uiFont(12)).padding(.horizontal, 9).padding(.vertical, 5)
-                        .foregroundStyle(s.history.isEmpty || s.busy ? rule : muted)
-                        .background(soft).overlay(Rectangle().stroke(rule, lineWidth: 1))
-                }.buttonStyle(.plain).disabled(s.history.isEmpty || s.busy)
-                    .help("Clear all saved transcripts from the library")
-                    .accessibilityLabel("Clear library")
-            }.padding(.horizontal, 22).padding(.top, 32).padding(.bottom, 12)
+            quickExportSection.padding(.horizontal, 22).padding(.top, 14)
+            libraryHeader.padding(.horizontal, 22).padding(.top, 24).padding(.bottom, 8)
             ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(s.history) { doc in
-                        Button { s.open(doc) } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(doc.title).font(uiFont(13)).lineLimit(2)
-                                    .multilineTextAlignment(.leading).foregroundStyle(textColor)
-                                Text("\(stamp(doc.duration)) · \(doc.speakerCount) speakers")
-                                    .font(uiFont(12)).foregroundStyle(s.document?.id == doc.id ? accent : muted)
-                                Text(doc.created.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "en_US"))))
-                                    .font(uiFont(12)).foregroundStyle(muted)
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 22).padding(.vertical, 16)
-                                .background(s.document?.id == doc.id ? soft : .clear)
-                                .contentShape(Rectangle())
-                                .overlay(alignment: .leading) {
-                                    if s.document?.id == doc.id { Rectangle().fill(accent).frame(width: 2).allowsHitTesting(false) }
-                                }
-                                .overlay(alignment: .bottom) {
-                                    Rectangle().fill(rule).frame(height: 1).padding(.horizontal, 22).allowsHitTesting(false)
-                                }
-                        }.buttonStyle(.plain).disabled(s.busy).help(doc.title)
-                    }
-                }
+                LazyVStack(spacing: 0) { ForEach(s.history) { libraryRow($0) } }
             }
-            Spacer(minLength: 12)
             HStack(spacing: 7) {
                 Circle().fill(palette[1]).frame(width: 5, height: 5)
-                Text("Processed on this Mac").font(uiFont(12)).foregroundStyle(muted)
+                Text(s.mode == .cloud ? "Audio sent to Deepgram" : "Processed on this Mac")
+                    .font(uiFont(12)).foregroundStyle(muted)
             }.padding(22)
         }
     }

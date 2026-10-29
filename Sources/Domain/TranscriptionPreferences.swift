@@ -8,5 +8,6 @@ struct TranscriptionPreferences {
     var voiceModel: VoiceModel = .automatic
     var oneSpeakerPerSource = false
     var vocabulary = ""
+    var cloudLanguage = CloudLanguage.russian
 }
 

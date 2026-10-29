@@ -45,3 +45,21 @@ Publication uses a clean repository with a neutral commit author and no inherite
 history. The prior repository, its history and old release assets remain in a
 private archive. Only the reviewed source and newly packaged artifacts belong to
 the initial public release. The hosting account name remains visible on GitHub.
+
+## Deepgram mode (automated checks passed; live API unverified)
+
+Verified on 2026-10-29 (Apple Silicon, macOS toolchain): `zsh test.sh` passes in full,
+including `Cloud tests passed`, and `zsh build.sh --no-install` builds and signs
+`dist/VoiceScribe.app`. The app was not launched and no Deepgram request was sent.
+
+Automated: `Tests/CloudTests.swift` covers the request query, response parsing,
+offsets, per-source speakers, error messages, routing and key storage with fakes.
+No network call is made by the tests.
+
+Manual checks to run before release:
+- Save, replace and remove the API key; relaunch and confirm it persists.
+- Transcribe the synthetic demo in Russian and English; check speaker labels.
+- Wrong key → readable 401 message; offline → connection message; Stop cancels the upload.
+- Video with several audio tracks keeps per-source timing.
+- Ad-hoc signing changes on every build, so macOS may ask once to allow Keychain access.
+- Stereo in one track is sent as-is; Deepgram mixes channels (assumed, not verified).

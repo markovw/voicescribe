@@ -48,10 +48,20 @@ import UniformTypeIdentifiers
     @Published var vocabulary = "" {
         didSet { persistPreferences() }
     }
+    @Published var cloudLanguage: CloudLanguage = .russian {
+        didSet { persistPreferences() }
+    }
+    @Published private(set) var hasCloudKey = false
     @Published var modelInfo = ""
     var recognitionModel: RecognitionModel {
         get { mode == .fast ? fastModel : accurateModel }
-        set { if mode == .fast { fastModel = newValue } else { accurateModel = newValue } }
+        set {
+            switch mode {
+            case .fast: fastModel = newValue
+            case .accurate: accurateModel = newValue
+            case .cloud: break
+            }
+        }
     }
     @Published var quickExport = false
     @Published var quickFormat = "md"
@@ -72,14 +82,17 @@ import UniformTypeIdentifiers
     private var isRestoringPreferences = true
     private let repository: any TranscriptRepository
     private let preferences: any PreferencesStoring
+    private let credentials: (any CredentialStoring)?
     private let makeTranscriptionService: @MainActor () -> any TranscriptionServicing
 
     init(repository: any TranscriptRepository,
          preferences: any PreferencesStoring,
+         credentials: (any CredentialStoring)? = nil,
          startTicker: Bool = true,
          makeTranscriptionService: @escaping @MainActor () -> any TranscriptionServicing) {
         self.repository = repository
         self.preferences = preferences
+        self.credentials = credentials
         self.makeTranscriptionService = makeTranscriptionService
         let settings = preferences.load()
         mode = settings.mode
@@ -89,6 +102,8 @@ import UniformTypeIdentifiers
         vocabulary = settings.vocabulary
         oneSpeakerPerSource = settings.oneSpeakerPerSource
         count = settings.speakerCount
+        cloudLanguage = settings.cloudLanguage
+        hasCloudKey = credentials?.hasSecret ?? false
         isRestoringPreferences = false
         do { history = try repository.load() }
         catch { self.error = "Could not load the library: \(error.localizedDescription)" }
@@ -237,7 +252,22 @@ import UniformTypeIdentifiers
         guard !isRestoringPreferences else { return }
         preferences.save(TranscriptionPreferences(speakerCount: count, mode: mode,
             fastModel: fastModel, accurateModel: accurateModel, voiceModel: voiceModel,
-            oneSpeakerPerSource: oneSpeakerPerSource, vocabulary: vocabulary))
+            oneSpeakerPerSource: oneSpeakerPerSource, vocabulary: vocabulary, cloudLanguage: cloudLanguage))
+    }
+
+    /// Returns false and sets `error` when the key could not be stored.
+    @discardableResult
+    func saveCloudKey(_ key: String) -> Bool {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let credentials, !trimmed.isEmpty else { return false }
+        do { try credentials.save(trimmed); hasCloudKey = true; error = nil; return true }
+        catch { self.error = "Could not save the Deepgram key: \(error.localizedDescription)"; return false }
+    }
+
+    func removeCloudKey() {
+        guard let credentials else { return }
+        do { try credentials.delete(); hasCloudKey = false }
+        catch { self.error = "Could not remove the Deepgram key: \(error.localizedDescription)" }
     }
 
     func cancel() {
@@ -267,7 +297,7 @@ import UniformTypeIdentifiers
         let previous = document
         let request = TranscriptionRequest(source: source, speakerCount: count, mode: mode,
             model: recognitionModel, voiceModel: voiceModel, vocabulary: vocabulary,
-            audioLayout: audioLayout, oneSpeakerPerSource: oneSpeakerPerSource)
+            audioLayout: audioLayout, oneSpeakerPerSource: oneSpeakerPerSource, cloudLanguage: cloudLanguage)
         let outputFormat = quickFormat
         let service = makeTranscriptionService()
         service.onProgress = { [weak self] progress in self?.apply(progress) }
