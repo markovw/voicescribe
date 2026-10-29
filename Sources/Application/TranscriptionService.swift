@@ -9,6 +9,7 @@ struct TranscriptionRequest {
     let vocabulary: String
     let audioLayout: String
     let oneSpeakerPerSource: Bool
+    var cloudLanguage: CloudLanguage = .russian
 }
 
 struct TranscriptionProgress {

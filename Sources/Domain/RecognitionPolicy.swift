@@ -1,10 +1,23 @@
 import Foundation
 
 enum TranscriptionMode: String, CaseIterable, Identifiable {
-    case fast, accurate
+    case fast, accurate, cloud
     var id: String { rawValue }
-    var title: String { self == .fast ? "Fast" : "Accurate" }
-    var detail: String { self == .fast ? "Auto balances speed and difficult speech using local audio analysis." : "Choose a local model for careful transcription. Quality depends on the recording." }
+    var title: String {
+        switch self {
+        case .fast: return "Fast"
+        case .accurate: return "Accurate"
+        case .cloud: return "Deepgram"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .fast: return "Auto balances speed and difficult speech using local audio analysis."
+        case .accurate: return "Choose a local model for careful transcription. Quality depends on the recording."
+        case .cloud: return "Sends extracted audio to Deepgram Nova-3 with your API key. Usage is billed to your Deepgram account."
+        }
+    }
+    var isLocal: Bool { self != .cloud }
 }
 
 enum RecognitionModel: String, CaseIterable, Identifiable {

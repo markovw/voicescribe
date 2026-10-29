@@ -23,6 +23,8 @@ private final class ExpansionInteraction: ObservableObject {
 private final class ModelMenuInteraction: ObservableObject {
     @Published var models = false
     @Published var voices = false
+    @Published var cloud = false
+    @Published var cloudKeyDraft = ""
 }
 
 private struct ExpandableSection<Content: View>: View {
@@ -214,6 +216,34 @@ struct ContentView: View {
         }.padding(18).frame(width: 350).background(ink).foregroundStyle(textColor)
     }
 
+    var cloudSettings: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Deepgram").font(uiFont(14, weight: .medium))
+            HStack(spacing: 6) {
+                Image(systemName: s.hasCloudKey ? "checkmark.seal" : "key").font(.system(size: 11))
+                Text(s.hasCloudKey ? "API key saved in Keychain" : "No API key")
+                    .font(uiFont(11))
+            }.foregroundStyle(s.hasCloudKey ? accent : muted)
+            SecureField(s.hasCloudKey ? "Replace API key" : "Paste API key", text: $modelMenu.cloudKeyDraft)
+                .font(uiFont(12)).textFieldStyle(.roundedBorder)
+                .onSubmit { if s.saveCloudKey(modelMenu.cloudKeyDraft) { modelMenu.cloudKeyDraft = "" } }
+            HStack {
+                Button("Save key") {
+                    if s.saveCloudKey(modelMenu.cloudKeyDraft) { modelMenu.cloudKeyDraft = "" }
+                }.disabled(modelMenu.cloudKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Spacer()
+                if s.hasCloudKey {
+                    Button("Remove key", role: .destructive) { s.removeCloudKey() }
+                }
+            }.font(uiFont(12))
+            Picker("Language", selection: $s.cloudLanguage) {
+                ForEach(CloudLanguage.allCases) { Text($0.title).tag($0) }
+            }.font(uiFont(12))
+            Text("Nova-3 with speaker labels. Only extracted audio is uploaded. Usage is billed to your Deepgram account; vocabulary terms are sent as keyterms at extra cost.")
+                .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+        }.padding(20).frame(width: 330).background(ink).foregroundStyle(textColor)
+    }
+
     var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("voicescribe").font(uiFont(20, weight: .medium))
@@ -235,6 +265,21 @@ struct ContentView: View {
                 }.background(soft).clipShape(RoundedRectangle(cornerRadius: 6))
                     .disabled(s.busy).accessibilityElement(children: .contain)
                     .accessibilityLabel("Transcription mode")
+                if s.mode == .cloud {
+                Button { modelMenu.cloud.toggle() } label: {
+                    HStack {
+                        Text("Nova-3 · \(s.cloudLanguage.title)").font(uiFont(12, weight: .medium))
+                        Spacer()
+                        Image(systemName: s.hasCloudKey ? "chevron.down" : "exclamationmark.circle")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(s.hasCloudKey ? textColor : accent)
+                    }.padding(10).frame(maxWidth: .infinity)
+                        .background(soft).clipShape(RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(s.busy)
+                    .accessibilityLabel(s.hasCloudKey ? "Deepgram settings" : "Deepgram settings, API key missing")
+                    .popover(isPresented: $modelMenu.cloud, arrowEdge: .trailing) { cloudSettings }
+                } else {
                 Button { modelMenu.models.toggle() } label: {
                     HStack {
                         Text(s.recognitionModel.shortTitle).font(uiFont(12, weight: .medium))
@@ -248,6 +293,7 @@ struct ContentView: View {
                     .popover(isPresented: $modelMenu.models, arrowEdge: .trailing) {
                         modelChoices
                     }
+                }
                 Button { modelMenu.voices.toggle() } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "slider.horizontal.3").font(.system(size: 11))
@@ -267,7 +313,7 @@ struct ContentView: View {
                             }
                             Picker("Voice detection", selection: $s.voiceModel) {
                                 ForEach(VoiceModel.allCases) { model in Text(model.title).tag(model) }
-                            }.font(uiFont(12)).disabled(s.busy || s.oneSpeakerPerSource)
+                            }.font(uiFont(12)).disabled(s.busy || s.oneSpeakerPerSource || s.mode == .cloud)
                             Text(s.voiceModel.detail).font(uiFont(11)).foregroundStyle(muted)
                                 .fixedSize(horizontal: false, vertical: true)
                             HStack {
@@ -276,7 +322,7 @@ struct ContentView: View {
                                 Picker("Number of speakers", selection: $s.count) {
                                     Text("Auto").tag(0)
                                     ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
-                                }.labelsHidden().frame(width: 76).disabled(s.busy || s.oneSpeakerPerSource)
+                                }.labelsHidden().frame(width: 76).disabled(s.busy || s.oneSpeakerPerSource || s.mode == .cloud)
                                     .help("Used for mixed audio with Community. Separate audio keeps sources independent. For one person on each track, enable One speaker per audio track.")
                             }
                             if s.count > 0 && !s.oneSpeakerPerSource {
@@ -286,7 +332,7 @@ struct ContentView: View {
                             TextField("Names or terms, comma-separated", text: $s.vocabulary)
                                 .font(uiFont(12)).textFieldStyle(.roundedBorder).disabled(s.busy)
                                 .help("Vocabulary hints for Qwen and MOSS. Parakeet does not use vocabulary hints. Audio is processed locally.")
-                            Text("All inference runs on this Mac. First use downloads model weights.")
+                            Text(s.mode == .cloud ? "Deepgram detects voices itself; voice model and speaker count apply to local modes only." : "All inference runs on this Mac. First use downloads model weights.")
                                 .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
                         }.padding(20).frame(width: 330)
                             .background(ink).foregroundStyle(textColor)

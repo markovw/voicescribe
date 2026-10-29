@@ -11,7 +11,12 @@ Local audio and video transcription with speaker diarization.
 
 Download the DMG from [Releases](../../releases) and drag the app into Applications. The app is ad-hoc signed and not notarized by Apple.
 
-Models download on first use. All transcription runs locally on your Mac.
+Models download on first use. Fast and Accurate run locally on your Mac.
+
+Optional Deepgram mode: choose **Deepgram**, open the model menu and paste your
+API key. The key is stored in the macOS Keychain. Only the extracted audio track
+is uploaded to Deepgram Nova-3 (speaker labels on, Russian/English/mixed). Usage
+is billed to your Deepgram account; vocabulary terms are sent as keyterms.
 
 ## Development
 

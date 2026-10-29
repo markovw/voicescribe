@@ -32,3 +32,5 @@ swiftc -target arm64-apple-macosx14.0 -parse-as-library -module-cache-path "$ROO
 
 swiftc -target arm64-apple-macosx14.0 -parse-as-library -module-cache-path "$ROOT/.cache/modules" "${APP_TEST_SOURCES[@]}" "$ROOT/Tests/InfrastructureTests.swift" -o "$ROOT/.cache/infrastructure-tests"
 "$ROOT/.cache/infrastructure-tests"
+swiftc -target arm64-apple-macosx14.0 -parse-as-library -module-cache-path "$ROOT/.cache/modules" "${APP_TEST_SOURCES[@]}" "$ROOT/Tests/CloudTests.swift" -o "$ROOT/.cache/cloud-tests"
+"$ROOT/.cache/cloud-tests"
