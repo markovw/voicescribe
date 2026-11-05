@@ -1,6 +1,17 @@
 # Validation
 
-## Unreleased — long-file reliability and Accurate speed
+## Release 2.1.0, build 3
+
+Drops repeated audio sources in multi-track recordings (Deepgram and local), turns
+on "One speaker per audio track" by default for multi-track files, and includes the
+long-file reliability and Accurate speed work below. `zsh test.sh` passed and
+`dist/VoiceScribe.app` was built, signed ad hoc and packaged into `VoiceScribe.dmg`.
+The user ran the installed build with Deepgram on a real 3-track meeting recording;
+the release author confirmed the same recording live through the app's cloud path
+(2 sources, 1 redundant track skipped, no repeats). The full manual checklist in
+`docs/MANUAL_TESTING.md` was not rerun for this release.
+
+### Long-file reliability and Accurate speed
 
 Verified on 2026-10-30 (M4 Pro, 24 GB) with an isolated library, synthetic
 recordings and cached models; the installed app and history were not touched.
