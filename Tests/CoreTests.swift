@@ -1,5 +1,42 @@
 import Foundation
 
+/// Synthetic turns: two people alternate; `words` distinct tokens per turn.
+private func turns(_ speaker: Int, count: Int, prefix: String) -> [Utterance] {
+    (0..<count).compactMap { turn in
+        guard turn % 2 == speaker else { return nil }
+        let start = Double(turn) * 4
+        let text = (0..<6).map { "\(prefix)\(turn)w\($0)" }.joined(separator: " ")
+        return Utterance(start: start, end: start + 3, text: text, speaker: "Speaker 1", needsReview: false)
+    }
+}
+
+private func verifyRepeatedSources() {
+    let mic = turns(0, count: 40, prefix: "a"), remote = turns(1, count: 40, prefix: "a")
+    let mix = (mic + remote).sorted { $0.start < $1.start }
+    // A full mix goes, wherever it sits; the stems stay.
+    assert(RepeatedSources.redundant([mix, mic, remote]) == [0])
+    assert(RepeatedSources.redundant([mic, remote, mix]) == [2])
+    // Independent tracks, even with a few shared words, are kept.
+    var echo = remote
+    for i in echo.indices where i % 5 == 0 { echo[i].text += " " + mic.first!.text }
+    assert(RepeatedSources.redundant([mic, echo]).isEmpty)
+    // A duplicate pair keeps exactly one copy.
+    assert(RepeatedSources.redundant([mic, mic]).count == 1)
+    // Too few words to judge: never dropped.
+    let short = Array(mic.prefix(2))
+    assert(RepeatedSources.redundant([short, mic]).isEmpty || RepeatedSources.redundant([short, mic]) == [1])
+    assert(!RepeatedSources.redundant([short, mic]).contains(0))
+    // Case and punctuation do not hide a repeat.
+    assert(RepeatedSources.tokens("Привет, МИР! ok-2") == ["привет", "мир", "ok", "2"])
+    // Engine file names name their container track; combined audio has none.
+    assert(AudioPlan.origin(of: "/x/track-2-channel-1.wav") == 2 && AudioPlan.origin(of: "/x/track-0-mono.wav") == 0)
+    assert(AudioPlan.origin(of: "/x/combined-mono.wav") == nil)
+    let owned = AudioPlan(separate: true, paths: ["/x/track-1-channel-0.wav", "/x/track-2-channel-0.wav"], containerTracks: 3, channels: 6)
+    assert(owned.ownsTracks)
+    assert(!AudioPlan(separate: true, paths: ["/x/track-0-channel-0.wav", "/x/track-0-channel-1.wav"], containerTracks: 1, channels: 2).ownsTracks)
+    assert(!AudioPlan(separate: false, paths: ["/x/combined-mono.wav"], containerTracks: 3, channels: 6).ownsTracks)
+}
+
 @main struct CoreTests {
     static func main() throws {
         assert(SpeakerProcessing.layout(requested: "automatic", totalSpeakers: 2) == "automatic")
@@ -137,6 +174,8 @@ import Foundation
         assert(ProcessingStatus.fromLog("[progress] {\"label\":\"Waiting\",\"current\":1,\"total\":0}")?.fraction == nil)
         assert(ProcessingStatus.fromLog("[progress] {\"label\":\"Waiting\",\"current\":9,\"total\":8}")?.fraction == nil)
         assert(ProcessingStatus.fromLog("[scribe] Diarizing speakers...")?.label == "Identifying speakers…")
+        verifyRepeatedSources()
+        print("PASS: repeated-source detection drops a full mix or duplicate, keeps independent and short sources")
         print("PASS: decoding, review flags, correction persistence, speaker names, TXT/SRT/VTT, timestamp rollover")
     }
 }

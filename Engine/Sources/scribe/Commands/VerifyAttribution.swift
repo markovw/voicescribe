@@ -44,6 +44,8 @@ struct VerifyAttribution: ParsableCommand {
         try check(switched[0]["text"] as? String == "Hello", "First speaker must retain only their words")
         try check(switched[1]["text"] as? String == "yes please", "Second speaker must retain both words")
         try check(switched[1]["speaker"] as? String == "Speaker 2", "Speaker labels must be normalized")
+        let spaced = try segments(turns, [word("версии", 1.1, 1.4), word(" ", 1.4, 1.4), word("2", 1.5, 1.6), word(".0", 1.6, 1.7)])
+        try check(spaced[0]["text"] as? String == "версии 2.0", "A standalone space token must separate words")
         let boundary = try segments(turns, [word("Hello", 0.7, 1.4)])
         try check(boundary[0]["speaker"] as? String == "Speaker 2", "Largest overlap must determine attribution")
         try check(boundary[0]["needsReview"] as? Bool == true, "Ambiguous boundary must require review")

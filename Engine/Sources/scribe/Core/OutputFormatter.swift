@@ -86,11 +86,18 @@ enum OutputFormatter {
         var wordStart: Double = 0
         var wordEnd: Double = 0
 
+        var pendingBoundary = false
         for timing in timings {
             let token = timing.token
-            if token.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+            // Parakeet v3 emits a standalone space before digits ("версии", " ",
+            // "2", ".0"). It carries no text but still separates two words.
+            if token.trimmingCharacters(in: .whitespaces).isEmpty {
+                if !token.isEmpty { pendingBoundary = true }
+                continue
+            }
 
-            let startsNewWord = token.hasPrefix(" ") || words.isEmpty && currentText.isEmpty
+            let startsNewWord = token.hasPrefix(" ") || pendingBoundary || words.isEmpty && currentText.isEmpty
+            pendingBoundary = false
 
             if startsNewWord && !currentText.isEmpty {
                 // Flush previous word

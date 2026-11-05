@@ -39,7 +39,7 @@ import AVFoundation
             // The worker pads PCM explicitly, preserving the video timeline
             // even when a decoder ignores empty M4A edit-list intervals.
             offsets.append(max(0, range.start.seconds))
-            let trackURL = folder.appendingPathComponent("input-\(index).m4a")
+            let trackURL = folder.appendingPathComponent("input-\(index).\(exporter.fileExtension)")
             try await exporter.export(composition, to: trackURL)
             tracks.append(trackURL)
         }

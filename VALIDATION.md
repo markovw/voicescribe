@@ -1,5 +1,30 @@
 # Validation
 
+## Unreleased — long-file reliability and Accurate speed
+
+Verified on 2026-10-30 (M4 Pro, 24 GB) with an isolated library, synthetic
+recordings and cached models; the installed app and history were not touched.
+
+- Local extraction now decodes each track once to 16 kHz PCM WAV instead of
+  re-encoding AAC. Before the change a 5-minute synthetic video failed in
+  `inspect-audio` with `OSStatus -39` (AAC end-of-stream in the engine decoder);
+  it now completes, as does a 60-minute one. Deepgram still uploads M4A.
+- Accurate decodes up to eight similar-length Qwen fragments per batch. Rows are
+  equalised with real neighbouring audio, never appended silence, because even
+  0.2 s of silence changes Qwen output. WER over three chunkings was equivalent:
+  EN 0.20% sequential vs 0.24% batched (2520 words), RU 9.06% vs 8.55% (1368
+  words; mostly number/term normalisation such as «два ноль»/«2.0»).
+- Parakeet no longer joins words before numbers («версии2.0» → «версии 2.0»):
+  its standalone space token now separates words (`verify-attribution` covers it).
+- Timings, whole pipeline including extraction: 5-minute EN — Accurate Qwen 1.7B
+  23.3 s → 12.3 s, Fast Parakeet 1.9 s. 60-minute EN — Fast Auto 19.6 s,
+  Accurate Qwen 1.7B 116 s with 2.5 GB peak resident memory.
+- `zsh test.sh` passes, including new PCM export and batched-runner tests;
+  `zsh build.sh --no-install` builds and signs `dist/VoiceScribe.app`.
+
+Not verified: real (non-synthetic) Russian conversations, the Qwen 0.6B model
+(weights not cached), and the app UI with this build.
+
 ## Release 2.0.0, build 2
 
 Adds the optional Deepgram cloud mode and the refactored sidebar (see the Deepgram
@@ -71,3 +96,53 @@ Manual checks to run before release:
 - Video with several audio tracks keeps per-source timing.
 - Ad-hoc signing changes on every build, so macOS may ask once to allow Keychain access.
 - Stereo in one track is sent as-is; Deepgram mixes channels (assumed, not verified).
+
+### Deepgram: redundant tracks (automated checks passed; live API unverified)
+
+Verified on 2026-11-05: `zsh test.sh` passes in full. When a file has several audio
+tracks and "One speaker per audio track" is off, the cloud path now runs the engine's
+`inspect-audio` before upload, same as local mode. Duplicate tracks and a full mix of
+the other tracks are dropped. When independence is uncertain, the tracks are combined
+into one source, so Deepgram numbers speakers once for the whole recording.
+Inspection failure falls back to uploading every track; Stop cancels it.
+With "One speaker per audio track" on, redundant tracks are dropped too, but only
+when the remaining sources are whole container tracks; a combined result keeps all.
+
+Automated: `Tests/InfrastructureTests.swift` runs the built engine on synthetic
+microphone + remote + mix tracks (and a duplicate) and checks only the two stems
+remain; plan mapping, fallback and cancellation use a fake runner.
+`Tests/CloudTests.swift` checks that skipped tracks are never uploaded.
+A manual check with synthetic AAC (48 kHz, 96 kbps) tracks also dropped the mix.
+
+Manual: re-run a real multi-track meeting recording (Zoom/OBS) through Deepgram and
+confirm the speaker list no longer repeats people under extra "Source N" labels.
+
+Live check on 2026-11-05 (user's multi-track meeting, 3 container tracks, Deepgram):
+the full-mix track was skipped ("2 sources · 1 redundant track skipped"). Deepgram
+still splits each remaining track into 3 clusters: one dominant voice per track plus
+short low-density fragments (backchannel or noise, not echo by text comparison).
+
+"One speaker per audio track" is on by default for a fresh install; a saved choice
+is kept. It applies only to files with several audio tracks: a single-track file is
+always diarized (cloud and local), and voice model and speaker count stay editable.
+
+### Repeated sources: stereo tracks and safety net (2026-11-05)
+
+Regression: with "One speaker per audio track" on, the user's recording again repeated
+every line. Its three container tracks are stereo, so inspection returns channel files
+(`track-N-channel-0.wav`); the cloud path only mapped mono tracks back to their owners,
+rejected the result and uploaded all three tracks including the full mix.
+
+Fix: each inspected source records its container track (`AudioPlan.origin(of:)`), so
+ownership holds for stereo channels. Local mode inspects with `automatic` too and keeps
+the result when each source is its own track; otherwise it uses every track as before.
+After recognition, `RepeatedSources` drops a source whose words mostly repeat other
+sources at the same time (threshold 50%, at least 30 words), in both cloud and local
+modes, and renumbers the remaining sources.
+
+Checked on the user's file without network (recorded uploads, replayed text):
+- Per-track on and off: 2 uploads (`source-0.m4a`, `source-1.m4a`), "1 redundant track skipped".
+- Earlier duplicated run replayed through the safety net: the mix (6889 words, 93%
+  repeated) is dropped; stems repeat 3–7% of words and stay.
+- Inspection of the 82-minute file takes about 100 s before upload.
+Unverified: a live Deepgram request with this build.

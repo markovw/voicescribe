@@ -32,6 +32,21 @@ private final class MemoryPreferences: PreferencesStoring {
     func cancel() { }
 }
 
+@MainActor private final class FakeInspector: SourceInspecting {
+    var keep: [Int] = []
+    var combined = false
+    /// Stereo tracks come back as encoded channel files, not the exported tracks.
+    var encoded = false
+    var calls = 0
+    func inspect(_ audio: PreparedAudio, folder: URL) async throws -> InspectedAudio {
+        calls += 1
+        let tracks = keep.map { encoded ? URL(fileURLWithPath: "/tmp/source-\($0).m4a") : audio.tracks[$0] }
+        return InspectedAudio(tracks: tracks, offsets: keep.map { encoded ? 0 : audio.offsets[$0] },
+                              origins: combined ? keep.map { _ in nil } : keep)
+    }
+    func cancel() { }
+}
+
 private final class FakeRecognizer: CloudRecognizing, @unchecked Sendable {
     var responses: [Data] = []
     var calls: [(URL, String, DeepgramOptions)] = []
@@ -131,6 +146,13 @@ private func request(_ mode: TranscriptionMode, vocabulary: String = "", perTrac
         assert(single.title == "meeting-transcribed" && single.duration == 10 && single.processingDuration != nil)
         assert(single.modelSummary?.contains("Deepgram") == true && progressStages.contains("Transcribing with Deepgram…"))
 
+        // One track has no track ownership: voices are still diarized.
+        recognizer.calls = []
+        recognizer.responses = [twoSpeakers]
+        let lone = try await service.transcribe(request(.cloud, perTrack: true), previous: nil)
+        assert(recognizer.calls.count == 1 && recognizer.calls[0].2.diarize)
+        assert(lone.speakers == ["Speaker 1", "Speaker 2"] && lone.audioLayout?.hasPrefix("Mixed audio") == true)
+
         // Separate tracks: offsets applied, speakers namespaced per source, ordered by time.
         preparer.tracks = [URL(fileURLWithPath: "/tmp/input-0.m4a"), URL(fileURLWithPath: "/tmp/input-1.m4a")]
         preparer.offsets = [0, 1]
@@ -152,6 +174,72 @@ private func request(_ mode: TranscriptionMode, vocabulary: String = "", perTrac
         recognizer.responses = [twoSpeakers, twoSpeakers]
         let renamed = try await service.transcribe(request(.cloud, perTrack: true), previous: named)
         assert(renamed.names["Source 1"] == "Anna")
+
+        // Redundant tracks: a full mix is never uploaded, so voices are not repeated.
+        let inspector = FakeInspector()
+        let inspected = CloudTranscriptionService(audioPreparer: preparer, recognizer: recognizer,
+                                                  credentials: credentials, inspector: inspector)
+        preparer.tracks.append(URL(fileURLWithPath: "/tmp/input-2.m4a"))
+        preparer.offsets.append(0)
+        inspector.keep = [0, 1]
+        recognizer.calls = []
+        recognizer.responses = [twoSpeakers, twoSpeakers]
+        let stems = try await inspected.transcribe(request(.cloud), previous: nil)
+        assert(inspector.calls == 1 && recognizer.calls.map { $0.0.lastPathComponent } == ["input-0.m4a", "input-1.m4a"])
+        assert(!stems.speakers.contains { $0.hasPrefix("Source 3") })
+        assert(stems.audioLayout?.contains("2 sources") == true && stems.audioLayout?.contains("1 redundant track skipped") == true)
+        // Combined into one source: speakers are numbered once for the whole recording.
+        inspector.keep = [2]
+        inspector.combined = true
+        recognizer.calls = []
+        recognizer.responses = [twoSpeakers]
+        let mixed = try await inspected.transcribe(request(.cloud), previous: nil)
+        assert(recognizer.calls.count == 1 && mixed.speakers == ["Speaker 1", "Speaker 2"])
+        assert(mixed.audioLayout?.hasPrefix("Mixed audio") == true)
+        // Track ownership also drops a full mix, then labels the remaining tracks.
+        inspector.keep = [0, 1]
+        inspector.combined = false
+        recognizer.calls = []
+        recognizer.responses = [twoSpeakers, twoSpeakers]
+        let owned = try await inspected.transcribe(request(.cloud, perTrack: true), previous: nil)
+        assert(inspector.calls == 3 && recognizer.calls.map { $0.0.lastPathComponent } == ["input-0.m4a", "input-1.m4a"])
+        assert(Set(owned.speakers) == ["Source 1", "Source 2"] && owned.audioLayout?.contains("1 redundant track skipped") == true)
+        // A combined recording has no track owner: every track is kept.
+        inspector.keep = [2]
+        inspector.combined = true
+        recognizer.calls = []
+        recognizer.responses = [twoSpeakers, twoSpeakers, twoSpeakers]
+        _ = try await inspected.transcribe(request(.cloud, perTrack: true), previous: nil)
+        assert(inspector.calls == 4 && recognizer.calls.count == 3)
+        inspector.combined = false
+        // Stereo tracks: channel files still map to their tracks, so ownership holds.
+        inspector.keep = [1, 2]
+        inspector.encoded = true
+        recognizer.calls = []
+        recognizer.responses = [twoSpeakers, twoSpeakers]
+        let stereo = try await inspected.transcribe(request(.cloud, perTrack: true), previous: nil)
+        assert(recognizer.calls.map { $0.0.lastPathComponent } == ["source-1.m4a", "source-2.m4a"])
+        assert(Set(stereo.speakers) == ["Source 1", "Source 2"] && stereo.audioLayout?.contains("1 redundant track skipped") == true)
+        inspector.encoded = false
+
+        // Safety net: a mix that inspection missed repeats both stems and is dropped after recognition.
+        inspector.keep = [0, 1, 2]
+        func response(_ turns: [(Double, String)]) -> Data {
+            let items = turns.map { #"{"start":\#($0.0),"end":\#($0.0 + 2),"transcript":"\#($0.1)","speaker":0}"# }
+            return Data(#"{"metadata":{"duration":100},"results":{"utterances":[\#(items.joined(separator: ","))]}}"#.utf8)
+        }
+        let micTurns = (0..<10).map { t in (Double(t) * 10, (0..<6).map { w in "mic\(t)x\(w)" }.joined(separator: " ")) }
+        let remoteTurns = (0..<10).map { t in (Double(t) * 10 + 5, (0..<6).map { w in "remote\(t)x\(w)" }.joined(separator: " ")) }
+        for perTrack in [false, true] {
+            recognizer.calls = []
+            recognizer.responses = [response(micTurns + remoteTurns), response(micTurns), response(remoteTurns)]
+            let safe = try await inspected.transcribe(request(.cloud, perTrack: perTrack), previous: nil)
+            assert(recognizer.calls.count == 3 && safe.segments.count == 20, "\(safe.segments.count)")
+            assert(Set(safe.speakers) == (perTrack ? ["Source 1", "Source 2"] : ["Source 1 · Speaker 1", "Source 2 · Speaker 1"]))
+            assert(safe.segments.first { $0.text.hasPrefix("mic0") }?.speaker.hasPrefix("Source 1") == true)
+            assert(safe.audioLayout?.contains("1 redundant track skipped") == true)
+        }
+        preparer.tracks.removeLast(); preparer.offsets.removeLast()
 
         // Upload failure propagates unchanged.
         recognizer.failure = NSError(domain: "VoiceScribe", code: 402, userInfo: [NSLocalizedDescriptionKey: "balance"])
@@ -196,6 +284,11 @@ private func request(_ mode: TranscriptionMode, vocabulary: String = "", perTrac
         defer { defaults.removePersistentDomain(forName: suite) }
         let stored = UserDefaultsPreferences(defaults: defaults)
         assert(stored.load().cloudLanguage == .russian)
+        // One speaker per track is on for a fresh install; an explicit choice persists.
+        assert(stored.load().oneSpeakerPerSource)
+        var off = TranscriptionPreferences(); off.oneSpeakerPerSource = false
+        stored.save(off)
+        assert(!stored.load().oneSpeakerPerSource)
         var settings = TranscriptionPreferences(); settings.mode = .cloud; settings.cloudLanguage = .english
         stored.save(settings)
         assert(stored.load().mode == .cloud && stored.load().cloudLanguage == .english)
