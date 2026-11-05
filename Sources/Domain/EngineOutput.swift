@@ -24,5 +24,21 @@ struct AudioPlan: Decodable {
     var channels: Int
     var quality: [AudioQuality]? = nil
     var description: String { separate ? "Separate audio · \(paths.count) sources · Voices detected within each" : "Mixed audio · All voices detected together" }
+
+    /// The container track an engine file came from: `track-N-channel-C.wav`
+    /// or `track-N-mono.wav`. A combined recording has none.
+    static func origin(of path: String) -> Int? {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        guard name.hasPrefix("track-") else { return nil }
+        let rest = name.dropFirst("track-".count)
+        guard let dash = rest.firstIndex(of: "-") else { return nil }
+        return Int(rest[..<dash])
+    }
+
+    /// Separate sources, each from its own container track: track ownership holds.
+    var ownsTracks: Bool {
+        let origins = paths.map(Self.origin(of:))
+        return separate && paths.count > 1 && origins.allSatisfy { $0 != nil } && Set(origins.compactMap { $0 }).count == origins.count
+    }
 }
 

@@ -14,7 +14,7 @@ import Foundation
         }
         for model in [RecognitionModel.parakeet, .qwen] {
             let pipeline = TranscriptionPipeline(runner: EngineRunner(),
-                audioPreparer: AudioSourcePreparer(exporter: AudioTrackExporter()),
+                audioPreparer: AudioSourcePreparer(exporter: PCMTrackExporter()),
                 localRuntime: LocalModelRuntime(store: store, resources: resources), resources: resources)
             let request = TranscriptionRequest(source: root.appendingPathComponent("examples/two-speakers-demo.mp4"),
                 speakerCount: 0, mode: model == .parakeet ? .fast : .accurate, model: model,

@@ -145,6 +145,40 @@ def recognize_shorter(asr, audio, sr, start, end, options):
     return recovered, missing
 
 
+BATCH_SIZE = 8
+BATCH_LENGTH_SLACK = 3  # seconds of extra context a batched row may receive
+
+
+def fit_span(lo, hi, length, total):
+    """Grow [lo, hi) to `length` samples with real audio, right side first."""
+    extra = length - (hi - lo)
+    end = min(total, hi + extra)
+    return max(0, lo - (extra - (end - hi))), end
+
+
+def recognize_batch(asr, pieces, options):
+    """Decode similar-length fragments together: each decoding step reads the
+    weights once for the whole batch. Greedy text matches sequential decoding
+    inside owned spans. Returns one result per piece; None leaves the decision
+    to the sequential path."""
+    from types import SimpleNamespace
+    from mlx_audio.lm.sample_utils import make_sampler
+    from mlx_audio.stt.utils import merge_hotwords
+
+    limit = options["max_tokens"]
+    texts, tokens, _, _ = asr._generate_chunks_batched(
+        [(piece, 0.0) for piece in pieces], max_tokens=limit * len(pieces),
+        sampler=make_sampler(0.0, 1.0, 0.0, min_tokens_to_keep=1, top_k=0), logits_processors=None,
+        language=None, system_prompt=merge_hotwords(None, options.get("hotwords")),
+        batch_size=len(pieces), verbose=False)
+    # The token budget is shared by the batch. Once it is exhausted, rows that
+    # were still decoding cannot be told apart from finished ones.
+    if sum(tokens) >= limit * len(pieces):
+        return [None] * len(pieces)
+    return [SimpleNamespace(text=asr.extract_language(text)[1], generation_tokens=count)
+            for text, count in zip(texts, tokens)]
+
+
 def run_jobs(jobs, terms):
     import mlx.core as mx
     from mlx_audio.stt import load
@@ -175,20 +209,52 @@ def run_jobs(jobs, terms):
             job_index = job.get("sourceIndex", jobs.index(job) + 1)
             source_count = job.get("sourceCount", len(jobs))
             label = f"Transcribing with {MODEL_TITLES[model_name]}…"
+            options = dict(max_tokens=8192 if model_name == "moss" else 4096, temperature=0.0, verbose=False)
+            if terms:
+                options["hotwords"] = terms
+            if model_name != "moss":
+                options["language"] = None
+
+            def audible(span):
+                piece = audio[span[0]:span[1]]
+                return len(piece) and float(np.max(np.abs(piece))) >= 1e-6
+
+            def padded_piece(span):
+                piece = audio[span[0]:span[1]]
+                return np.pad(piece, (0, max(0, sr - len(piece))))
+
+            batched = {}
+            can_batch = model_name != "moss" and hasattr(asr, "_generate_chunks_batched")
             for index, (lo, hi, owned_start, owned_end) in enumerate(spans):
                 detail = f"Source {job_index} of {source_count} · Fragment {index + 1} of {len(spans)}"
                 progress(label, current=index, total=len(spans), detail=detail)
-                piece = audio[lo:hi]
-                if not len(piece) or float(np.max(np.abs(piece))) < 1e-6:
+                if not audible(spans[index]):
                     progress(label, current=index + 1, total=len(spans), detail=detail)
                     continue
-                padded = np.pad(piece, (0, max(0, sr - len(piece))))
-                options = dict(max_tokens=8192 if model_name == "moss" else 4096, temperature=0.0, verbose=False)
-                if terms:
-                    options["hotwords"] = terms
-                if model_name != "moss":
-                    options["language"] = None
-                result = asr.generate(padded, **options)
+                if can_batch and index not in batched:
+                    group = [index]
+                    for following in range(index + 1, min(len(spans), index + BATCH_SIZE)):
+                        span = spans[following]
+                        if following in batched or abs((span[1] - span[0]) - (hi - lo)) > BATCH_LENGTH_SLACK * sr or not audible(span):
+                            break
+                        group.append(following)
+                    if len(group) > 1:
+                        # Batch rows must share one length. Even a fraction of a
+                        # second of appended silence changes Qwen output, so
+                        # shorter rows hear more real neighbouring audio instead;
+                        # temporal ownership still discards that extra context.
+                        length = max(spans[i][1] - spans[i][0] for i in group)
+                        fitted = [fit_span(spans[i][0], spans[i][1], length, len(audio)) for i in group]
+                        if all(end - start == length for start, end in fitted):
+                            results = recognize_batch(asr, [audio[start:end] for start, end in fitted], options)
+                            batched.update({i: (span, r) for i, span, r in zip(group, fitted, results) if r is not None})
+                            mx.clear_cache()
+                if index in batched:
+                    (lo, hi), result = batched.pop(index)
+                else:
+                    result = None
+                if result is None:
+                    result = asr.generate(padded_piece((lo, hi)), **options)
                 if result.generation_tokens >= options["max_tokens"]:
                     progress(f"{detail}: recognition text limit; retrying shorter fragments…")
                     recovered, missing = recognize_shorter(asr, audio, sr, owned_start, owned_end, options)

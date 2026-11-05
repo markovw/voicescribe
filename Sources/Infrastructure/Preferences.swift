@@ -14,7 +14,7 @@ struct UserDefaultsPreferences: PreferencesStoring {
             fastModel: defaults.string(forKey: "fastRecognitionModel").flatMap(RecognitionModel.init(rawValue:)) ?? .automatic,
             accurateModel: defaults.string(forKey: "accurateRecognitionModel").flatMap(RecognitionModel.init(rawValue:)) ?? .qwen,
             voiceModel: defaults.string(forKey: "voiceModel").flatMap(VoiceModel.init(rawValue:)) ?? .automatic,
-            oneSpeakerPerSource: defaults.bool(forKey: "oneSpeakerPerSource"),
+            oneSpeakerPerSource: defaults.object(forKey: "oneSpeakerPerSource") == nil || defaults.bool(forKey: "oneSpeakerPerSource"),
             vocabulary: defaults.string(forKey: "transcriptionVocabulary") ?? "",
             cloudLanguage: defaults.string(forKey: "cloudLanguage").flatMap(CloudLanguage.init(rawValue:)) ?? .russian)
     }

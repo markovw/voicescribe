@@ -15,14 +15,20 @@ protocol CloudRecognizing: Sendable {
     private let audioPreparer: any AudioPreparing
     private let recognizer: any CloudRecognizing
     private let credentials: any CredentialStoring
+    private let inspector: (any SourceInspecting)?
 
-    init(audioPreparer: any AudioPreparing, recognizer: any CloudRecognizing, credentials: any CredentialStoring) {
+    init(audioPreparer: any AudioPreparing, recognizer: any CloudRecognizing, credentials: any CredentialStoring,
+         inspector: (any SourceInspecting)? = nil) {
         self.audioPreparer = audioPreparer
         self.recognizer = recognizer
         self.credentials = credentials
+        self.inspector = inspector
     }
 
-    func cancel() { audioPreparer.cancel() }
+    func cancel() {
+        audioPreparer.cancel()
+        inspector?.cancel()
+    }
 
     func refreshProgress() {
         if let fraction = audioPreparer.progressFraction { progress.fraction = fraction }
@@ -42,21 +48,32 @@ protocol CloudRecognizing: Sendable {
         let prepared = try await audioPreparer.prepare(source: source, folder: folder) { [self] update in
             progress = update
         }
-        let separate = prepared.tracks.count > 1
-        let perTrackSpeaker = request.oneSpeakerPerSource
-        progress.audioInfo = separate
-            ? (perTrackSpeaker ? "Separate tracks · One speaker per track" : "Separate audio · \(prepared.tracks.count) sources · Voices detected within each")
-            : "Mixed audio · All voices detected together"
+        // A single track has no track ownership: its voices are always diarized.
+        let perTrackSpeaker = request.oneSpeakerPerSource && prepared.tracks.count > 1
+        var sources = InspectedAudio(tracks: prepared.tracks, offsets: prepared.offsets)
+        // Drop duplicates and full mixes so no voice is recognized twice.
+        if prepared.tracks.count > 1, let inspector {
+            progress.stage = "Checking audio tracks…"
+            progress.fraction = nil; progress.detail = ""
+            let inspected = try await inspector.inspect(prepared, folder: folder)
+            try Task.checkCancellation()
+            // Track ownership needs one source per container track. A
+            // combined recording has no owner: keep every track then.
+            if !perTrackSpeaker || inspected.ownsTracks { sources = inspected }
+        }
         progress.modelInfo = "Deepgram Nova-3 · \(request.cloudLanguage.title) · Cloud"
+        progress.audioInfo = Self.layout(sources: sources.tracks.count, skipped: prepared.tracks.count - sources.tracks.count,
+                                          perTrack: perTrackSpeaker)
         let options = DeepgramOptions(language: request.cloudLanguage, diarize: !perTrackSpeaker,
                                       keyterms: DeepgramOptions.keyterms(from: request.vocabulary))
         var transcript = Transcript(title: source.deletingPathExtension().lastPathComponent + "-transcribed",
-            sourcePath: source.path, duration: prepared.duration, segments: [],
-            audioLayout: progress.audioInfo, modelSummary: progress.modelInfo)
-        for (index, track) in prepared.tracks.enumerated() {
+            sourcePath: source.path, duration: prepared.duration, segments: [])
+        let uploads = sources.tracks.count
+        var parts: [[Utterance]] = []
+        for (index, track) in sources.tracks.enumerated() {
             try Task.checkCancellation()
-            progress.sourceProgress = separate ? "Source \(index + 1) of \(prepared.tracks.count)" : ""
-            progress.stage = separate ? "Transcribing source \(index + 1) with Deepgram…" : "Transcribing with Deepgram…"
+            progress.sourceProgress = uploads > 1 ? "Source \(index + 1) of \(uploads)" : ""
+            progress.stage = uploads > 1 ? "Transcribing source \(index + 1) with Deepgram…" : "Transcribing with Deepgram…"
             let data = try await recognizer.recognize(audio: track, apiKey: apiKey, options: options)
             try Task.checkCancellation()
             let response: DeepgramResponse
@@ -65,14 +82,22 @@ protocol CloudRecognizing: Sendable {
                 throw NSError(domain: "VoiceScribe", code: 21, userInfo: [NSLocalizedDescriptionKey:
                     "Deepgram returned an unexpected response. \(error.localizedDescription)"])
             }
-            let offset = index < prepared.offsets.count ? prepared.offsets[index] : 0
-            let single = perTrackSpeaker ? "Source \(index + 1)" : nil
-            var part = Transcript(title: transcript.title, sourcePath: source.path, duration: 0,
-                segments: response.utterances(offset: offset, singleSpeaker: single))
-            if separate && !perTrackSpeaker { part.namespaceSpeakers(sourceIndex: index) }
-            transcript.segments += part.segments
+            let offset = index < sources.offsets.count ? sources.offsets[index] : 0
+            parts.append(response.utterances(offset: offset, singleSpeaker: perTrackSpeaker ? "Source" : nil))
             transcript.duration = max(transcript.duration, offset + (response.metadata?.duration ?? 0))
         }
+        // Safety net: a source whose words repeat the others is a mix or a
+        // duplicate that inspection missed. Sources are then numbered again.
+        let repeated = RepeatedSources.redundant(parts)
+        let kept = parts.indices.filter { !repeated.contains($0) }
+        for (number, index) in kept.enumerated() {
+            var part = Transcript(title: transcript.title, sourcePath: source.path, duration: 0, segments: parts[index])
+            if perTrackSpeaker { for i in part.segments.indices { part.segments[i].speaker = "Source \(number + 1)" } }
+            else if kept.count > 1 { part.namespaceSpeakers(sourceIndex: number) }
+            transcript.segments += part.segments
+        }
+        transcript.audioLayout = Self.layout(sources: kept.count, skipped: prepared.tracks.count - kept.count, perTrack: perTrackSpeaker)
+        transcript.modelSummary = progress.modelInfo
         transcript.segments.sort { a, b in a.start == b.start ? a.speaker < b.speaker : a.start < b.start }
         if let previous {
             if perTrackSpeaker { transcript.copySourceSpeakerNames(from: previous) }
@@ -80,6 +105,15 @@ protocol CloudRecognizing: Sendable {
         }
         transcript.processingDuration = ProcessInfo.processInfo.systemUptime - startedAt
         return transcript
+    }
+}
+
+extension CloudTranscriptionService {
+    static func layout(sources: Int, skipped: Int, perTrack: Bool) -> String {
+        let skippedInfo = skipped > 0 ? " · \(skipped) redundant track\(skipped == 1 ? "" : "s") skipped" : ""
+        guard sources > 1 else { return "Mixed audio · All voices detected together" + skippedInfo }
+        return (perTrack ? "Separate tracks · One speaker per track"
+            : "Separate audio · \(sources) sources · Voices detected within each") + skippedInfo
     }
 }
 

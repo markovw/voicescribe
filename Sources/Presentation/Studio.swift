@@ -42,7 +42,7 @@ import UniformTypeIdentifiers
     @Published var voiceModel: VoiceModel = .automatic {
         didSet { persistPreferences() }
     }
-    @Published var oneSpeakerPerSource = false {
+    @Published var oneSpeakerPerSource = true {
         didSet { persistPreferences() }
     }
     @Published var vocabulary = "" {

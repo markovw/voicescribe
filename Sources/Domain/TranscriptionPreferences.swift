@@ -6,7 +6,8 @@ struct TranscriptionPreferences {
     var fastModel: RecognitionModel = .automatic
     var accurateModel: RecognitionModel = .qwen
     var voiceModel: VoiceModel = .automatic
-    var oneSpeakerPerSource = false
+    /// Applies only to files with several audio tracks.
+    var oneSpeakerPerSource = true
     var vocabulary = ""
     var cloudLanguage = CloudLanguage.russian
 }

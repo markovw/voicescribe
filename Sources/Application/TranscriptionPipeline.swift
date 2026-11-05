@@ -48,7 +48,6 @@ import Foundation
         let requestedVoiceModel = request.voiceModel
         let selectedVocabulary = request.vocabulary
         let selectedLayout = request.audioLayout
-        let sourceSpeakers = request.oneSpeakerPerSource
         let startedAt = ProcessInfo.processInfo.systemUptime
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("VoiceScribe-\(UUID())")
         defer {
@@ -66,17 +65,36 @@ import Foundation
         let duration = prepared.duration
         let exportedTracks = prepared.tracks
         let trackOffsets = prepared.offsets
+        // A single track has no track ownership: its voices are always diarized.
+        let sourceSpeakers = request.oneSpeakerPerSource && exportedTracks.count > 1
         let planURL = folder.appendingPathComponent("audio-plan.json")
         let inspectionLog = folder.appendingPathComponent("inspection.log")
         logURL = inspectionLog; progress.stage = "Checking audio channels…"
+        let audioFolder = folder.appendingPathComponent("audio")
+        // Track ownership still drops duplicates and a full mix: inspect as
+        // usual, then keep the result only if each source is its own track.
+        let inspectionLayout = sourceSpeakers ? "automatic" : SpeakerProcessing.layout(requested: selectedLayout, totalSpeakers: speakerCount)
         let inspectionArgs = ["inspect-audio"] + exportedTracks.map(\.path) +
-            ["--directory", folder.appendingPathComponent("audio").path, "--output", planURL.path, "--layout", SpeakerProcessing.layout(requested: selectedLayout, totalSpeakers: speakerCount, oneSpeakerPerSource: sourceSpeakers),
+            ["--directory", audioFolder.path, "--output", planURL.path, "--layout", inspectionLayout,
              "--offsets", trackOffsets.map { String($0) }.joined(separator: ",")]
         try await Task.detached { try runner.run(executable: engine, arguments: inspectionArgs, log: inspectionLog) }.value
         try Task.checkCancellation()
-        let plan = try JSONDecoder().decode(AudioPlan.self, from: Data(contentsOf: planURL))
+        var plan = try JSONDecoder().decode(AudioPlan.self, from: Data(contentsOf: planURL))
+        var skippedTracks = 0
+        if sourceSpeakers {
+            if plan.ownsTracks {
+                skippedTracks = exportedTracks.count - plan.paths.count
+            } else {
+                // Uncertain independence: every container track, as the engine's
+                // `tracks` layout writes them (padded mono, original order).
+                plan = AudioPlan(separate: true, paths: exportedTracks.indices.map {
+                    audioFolder.appendingPathComponent("track-\($0)-mono.wav").path
+                }, containerTracks: plan.containerTracks, channels: plan.channels, quality: nil)
+            }
+        }
         guard !plan.paths.isEmpty else { throw NSError(domain: "VoiceScribe", code: 7, userInfo: [NSLocalizedDescriptionKey: "No audio sources found."]) }
-        progress.audioInfo = sourceSpeakers ? "Separate tracks · One speaker per track" : plan.description
+        let skippedInfo = skippedTracks > 0 ? " · \(skippedTracks) redundant track\(skippedTracks == 1 ? "" : "s") skipped" : ""
+        progress.audioInfo = sourceSpeakers ? "Separate tracks · One speaker per track" + skippedInfo : plan.description
         // A known total constrains mixed audio only. Source ownership
         // is explicit and never inferred from participant count.
         let sourceSpeakerCount = plan.separate ? 0 : speakerCount
@@ -141,6 +159,7 @@ import Foundation
         }
         var refined = Transcript(title: source.deletingPathExtension().lastPathComponent + "-transcribed",
             sourcePath: source.path, duration: duration, segments: [], audioLayout: progress.audioInfo, modelSummary: progress.modelInfo)
+        var parts: [Transcript] = []
         for (index, path) in plan.paths.enumerated() {
             progress.sourceProgress = plan.separate ? "Source \(index + 1) of \(plan.paths.count)" : ""
             try Task.checkCancellation()
@@ -163,14 +182,23 @@ import Foundation
             try await Task.detached { try runner.run(executable: engine, arguments: args, log: log) }.value
             try Task.checkCancellation()
             let result = try JSONDecoder().decode(EngineOutput.self, from: Data(contentsOf: resultURL))
-            var part = result.transcript(source: source)
-            if plan.separate {
-                part.namespaceSpeakers(sourceIndex: index)
-            }
+            parts.append(result.transcript(source: source))
+        }
+        // Safety net: a source whose words repeat the others is a full mix or a
+        // duplicate track that inspection kept. Sources are then numbered again.
+        let repeated = plan.separate ? RepeatedSources.redundant(parts.map(\.segments)) : []
+        let kept = parts.indices.filter { !repeated.contains($0) }
+        let separate = plan.separate && kept.count > 1
+        if !repeated.isEmpty {
+            refined.audioLayout = (refined.audioLayout ?? "") + " · \(repeated.count) repeated source\(repeated.count == 1 ? "" : "s") skipped"
+        }
+        for (number, index) in kept.enumerated() {
+            var part = parts[index]
+            if separate { part.namespaceSpeakers(sourceIndex: number) }
             refined.segments += part.segments
             let warnings = part.coverageWarnings ?? []
             if !warnings.isEmpty {
-                refined.coverageWarnings = (refined.coverageWarnings ?? []) + warnings.map { plan.separate ? "Source \(index + 1): \($0)" : $0 }
+                refined.coverageWarnings = (refined.coverageWarnings ?? []) + warnings.map { separate ? "Source \(number + 1): \($0)" : $0 }
             }
             refined.duration = max(refined.duration, part.duration)
         }

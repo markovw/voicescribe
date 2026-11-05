@@ -65,6 +65,29 @@ class LocalModelTests(unittest.TestCase):
             self.assertLess(calls[-1], calls[0])  # recovery excludes neighbour context
             self.assertEqual(len(result["words"]), 3)  # subsequent fragment still aligned
 
+    def test_batched_recognition_strips_language_and_defers_exhausted_budget(self):
+        calls = []
+        def batched(chunks, max_tokens, system_prompt, **kwargs):
+            calls.append((len(chunks), max_tokens, system_prompt))
+            counts = [3, 10] if max_tokens == 20 else [10, 10]
+            return ["language Russian<asr_text>Привет.", "language English<asr_text>Hi."], counts, [0, 0], [True, True]
+        asr = SimpleNamespace(_generate_chunks_batched=batched,
+            extract_language=lambda text: tuple(text[len("language "):].split("<asr_text>")))
+        sample_utils = ModuleType("mlx_audio.lm.sample_utils")
+        sample_utils.make_sampler = lambda *args, **kwargs: None
+        stt_utils = ModuleType("mlx_audio.stt.utils")
+        stt_utils.merge_hotwords = lambda base, words: ", ".join(words) if words else base
+        with patch.dict(sys.modules, {"mlx_audio": ModuleType("mlx_audio"), "mlx_audio.lm": ModuleType("mlx_audio.lm"),
+                                      "mlx_audio.lm.sample_utils": sample_utils, "mlx_audio.stt": ModuleType("mlx_audio.stt"),
+                                      "mlx_audio.stt.utils": stt_utils}):
+            pieces = [np.zeros(16000, dtype=np.float32)] * 2
+            results = runner.recognize_batch(asr, pieces, {"max_tokens": 10, "hotwords": ["Deepgram"]})
+            self.assertEqual([r.text for r in results], ["Привет.", "Hi."])
+            # A row at its own limit is returned so the caller retries it shorter.
+            self.assertEqual([r.generation_tokens for r in results], [3, 10])
+            self.assertEqual(calls[-1], (2, 20, "Deepgram"))
+            self.assertEqual(runner.recognize_batch(asr, pieces, {"max_tokens": 5}), [None, None])
+
     def test_alignment_subtokens_preserve_original_text_and_times(self):
         processor = SimpleNamespace(clean_token=lambda text: text.strip("!,"),
             tokenize_space_lang=lambda text: ["中", "文"] if "中文" in text else [text.strip("!,")])

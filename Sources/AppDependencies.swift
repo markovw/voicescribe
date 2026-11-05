@@ -9,11 +9,13 @@ import Foundation
                preferences: UserDefaultsPreferences(defaults: paths.preferencesSuite.flatMap(UserDefaults.init(suiteName:))),
                credentials: credentials) {
             TranscriptionRouter(local: {
-                TranscriptionPipeline(runner: EngineRunner(), audioPreparer: AudioSourcePreparer(exporter: AudioTrackExporter()),
+                TranscriptionPipeline(runner: EngineRunner(), audioPreparer: AudioSourcePreparer(exporter: PCMTrackExporter()),
                     localRuntime: LocalModelRuntime(store: paths.library), resources: Bundle.main.resourceURL)
             }, cloud: {
                 CloudTranscriptionService(audioPreparer: AudioSourcePreparer(exporter: AudioTrackExporter()),
-                    recognizer: DeepgramClient(), credentials: credentials)
+                    recognizer: DeepgramClient(), credentials: credentials,
+                    inspector: EngineSourceInspector(runner: EngineRunner(),
+                        engine: Bundle.main.resourceURL?.appendingPathComponent("scribe"), encoder: AudioTrackExporter()))
             })
         }
     }

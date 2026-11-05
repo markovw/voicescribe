@@ -313,13 +313,13 @@ struct ContentView: View {
             Toggle("One speaker per audio track", isOn: $s.oneSpeakerPerSource)
                 .font(uiFont(12)).disabled(s.busy)
             if s.oneSpeakerPerSource {
-                Text("Each original audio track keeps one speaker. Use only when each track contains one person's voice.")
+                Text("Each original audio track keeps one speaker. Use only when each track contains one person's voice. Files with one audio track still detect voices.")
                     .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
             }
             if local {
                 Picker("Voice detection", selection: $s.voiceModel) {
                     ForEach(VoiceModel.allCases) { model in Text(model.title).tag(model) }
-                }.font(uiFont(12)).disabled(s.busy || s.oneSpeakerPerSource)
+                }.font(uiFont(12)).disabled(s.busy)
                 Text(s.voiceModel.detail).font(uiFont(11)).foregroundStyle(muted)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
@@ -328,10 +328,10 @@ struct ContentView: View {
                     Picker("Number of speakers", selection: $s.count) {
                         Text("Auto").tag(0)
                         ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
-                    }.labelsHidden().frame(width: 76).disabled(s.busy || s.oneSpeakerPerSource)
+                    }.labelsHidden().frame(width: 76).disabled(s.busy)
                         .help("Used for mixed audio with Community. Separate audio keeps sources independent. For one person on each track, enable One speaker per audio track.")
                 }
-                if s.count > 0 && !s.oneSpeakerPerSource {
+                if s.count > 0 {
                     Text("Known count applies to mixed audio; separate sources detect voices independently")
                         .font(uiFont(11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
                 }
